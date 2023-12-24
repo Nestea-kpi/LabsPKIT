@@ -1,0 +1,133 @@
+#!groovy
+
+pipeline {
+
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  name: image-builder
+  labels:
+    robot: builder
+spec:
+  serviceAccount: jenkins-agent
+  containers:
+  - name: jnlp
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:v1.18.0-debug
+    imagePullPolicy: Always
+    command:
+    - /busybox/cat
+    tty: true
+    volumeMounts:
+      - name: docker-config
+        mountPath: /kaniko/.docker/
+        readOnly: true
+  - name: kubectl
+    image: bitnami/kubectl
+    tty: true
+    command:
+    - cat
+    securityContext:
+      runAsUser: 1000
+  - name: golang
+    image: golang:1.21.3
+    tty: true
+    command:
+    - cat
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: credentials
+        optional: false
+"""
+        }
+    }
+
+    environment {
+        APP_NAME = 'danylo_dovhaliuk'
+        DOCKER_IMAGE_NAME = 'profarb/applab5'
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                container(name: 'jnlp', shell: '/bin/bash') {
+                    echo 'Pulling new changes'
+                    checkout scm
+                }
+            }
+        }
+        stage('Compile') {
+            steps {
+                container(name: 'golang', shell: '/bin/bash') {
+                    sh "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-buildvcs=false go build -a -ldflags '-w -s -extldflags \"-static\"' -o ${APP_NAME} ."
+                }
+            }
+        }
+
+        stage('Unit Testing') {
+            steps {
+                container(name: 'golang', shell: '/bin/bash') {
+                    echo 'Testing the application'
+                    sh 'go test ./...'
+                }
+            }
+        }
+        stage('Build image') {
+            environment {
+                PATH = "/busybox:/kaniko:$PATH"
+            }
+            steps {
+                container(name: 'kaniko', shell: '/busybox/sh') {
+                    sh '''#!/busybox/sh
+                    /kaniko/executor --dockerfile="$(pwd)/Dockerfile" --context="dir:///$(pwd)" --build-arg "APP_NAME=${APP_NAME}" --destination ${DOCKER_IMAGE_NAME}:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+        stage('Deploy') {
+            steps {
+                container(name: 'kubectl', shell: '/bin/bash') {
+                    echo 'Deploying to Kubernetes'
+                    sh "sed -i 's|ImageName|${DOCKER_IMAGE_NAME}|' k8s/deployment.yaml"
+                    sh "sed -i 's|BuildNumber|${BUILD_NUMBER}|' k8s/deployment.yaml"
+                    // Застосування маніфесту
+                    sh 'kubectl apply -f k8s/'
+                }
+            }
+        }
+        stage('Test deployment') {
+            agent {
+                kubernetes {
+                    yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tester
+  labels:
+    robot: tester
+spec:
+  serviceAccount: jenkins-agent
+  containers:
+  - name: jnlp
+  - name: ubuntu
+    image: ubuntu:22.04
+    tty: true
+    command:
+    - cat
+"""
+                }
+            }
+            steps {
+                container(name: 'ubuntu', shell: '/bin/bash') {
+                    sh "apt-get update && apt-get install -y curl"
+                    sh "curl http://practice5:80"
+                }
+
+            }
+        }
+    }
+}

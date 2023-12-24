@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: Lab5Deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: applab5
+  template:
+    metadata:
+      labels:
+        app: applab5
+    spec:
+      containers:
+        - name: applab55container
+          image: NameImage:BuildNumber
+          ports:
+            - containerPort: 8080
